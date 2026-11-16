@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import json
 import yaml
 from pathlib import Path
+import html
 from datetime import datetime
 
 # Set Page Config
@@ -22,12 +23,16 @@ st.set_page_config(
 from backend.config import settings
 from backend.models import SigmaRule, AttackScenario, TelemetryEvent
 from backend.database import (
-    init_db, save_rule, get_rules, get_rule_by_id, get_rule_versions,
+    init_db, save_rule, get_rules, get_rule_by_id, get_rule_versions, rollback_rule_version,
     save_scenarios, get_scenarios,
     save_telemetry_events, get_telemetry_events,
     save_evaluation_run, get_evaluation_runs,
     save_hardening_proposal, get_hardening_proposals,
     save_report, get_reports
+)
+from backend.utils.pdf_generator import generate_pdf_report
+from backend.utils.validators import (
+    validate_rule_filename, validate_telemetry_filename, validate_payload_size, is_safe_path
 )
 from backend.rule_manager.sigma_loader import load_rules_from_directory, parse_sigma_yaml
 from backend.rule_manager.sigma_validator import validate_sigma_rule
@@ -520,28 +525,32 @@ elif page == "📜 Sigma Rule Manager":
                 c3.markdown(f"""<div class="glass-card"><div class="card-label">Version</div><div style="font-weight:700; color:#10b981;">v{curr_rule.version}</div></div>""", unsafe_allow_html=True)
                 c4.markdown(f"""<div class="glass-card"><div class="card-label">Rule ID</div><div style="font-weight:600; font-size:0.85rem; font-family:'JetBrains Mono';">{curr_rule.id[:14]}...</div></div>""", unsafe_allow_html=True)
 
-                st.markdown(f"<div style='margin: 16px 0; color: #cbd5e1;'><b>Description:</b> {curr_rule.description}</div>", unsafe_allow_html=True)
+                escaped_desc = html.escape(curr_rule.description)
+                st.markdown(f"<div style='margin: 16px 0; color: #cbd5e1;'><b>Description:</b> {escaped_desc}</div>", unsafe_allow_html=True)
                 
-                # Tag Chips
-                st.markdown("**Mapped MITRE ATT&CK Techniques:** " + " ".join([f"<span class='chip-mitre'>{t}</span>" for t in curr_rule.tags]), unsafe_allow_html=True)
+                # Tag Chips with HTML escaping
+                st.markdown("**Mapped MITRE ATT&CK Techniques:** " + " ".join([f"<span class='chip-mitre'>{html.escape(t)}</span>" for t in curr_rule.tags]), unsafe_allow_html=True)
                 
                 # Rule Topology Analysis
                 analysis = analyze_rule(curr_rule)
+                escaped_fields = html.escape(', '.join(analysis['target_fields']))
+                escaped_modifiers = html.escape(', '.join(analysis['modifiers_used']))
+                escaped_cond = html.escape(str(curr_rule.condition))
                 st.markdown(f"""
                 <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 12px 16px; margin: 12px 0;">
-                    <b>Targeted Fields:</b> <code style="color:#38bdf8;">{', '.join(analysis['target_fields'])}</code> &nbsp;|&nbsp; 
-                    <b>Modifiers Used:</b> <code style="color:#a855f7;">{', '.join(analysis['modifiers_used'])}</code> &nbsp;|&nbsp;
-                    <b>Condition Expression:</b> <code style="color:#10b981;">{curr_rule.condition}</code>
+                    <b>Targeted Fields:</b> <code style="color:#38bdf8;">{escaped_fields}</code> &nbsp;|&nbsp; 
+                    <b>Modifiers Used:</b> <code style="color:#a855f7;">{escaped_modifiers}</code> &nbsp;|&nbsp;
+                    <b>Condition Expression:</b> <code style="color:#10b981;">{escaped_cond}</code>
                 </div>
                 """, unsafe_allow_html=True)
 
                 st.subheader("YAML Specification")
                 st.code(curr_rule.raw_yaml, language="yaml")
 
-                # Version History & Lineage
+                # Version History & Rollback Controls
                 versions = get_rule_versions(curr_rule.id)
                 if versions:
-                    with st.expander(f"📜 Rule Version Lineage ({len(versions)} snapshots recorded in SQLite)"):
+                    with st.expander(f"📜 Rule Version Lineage ({len(versions)} snapshots recorded in SQLite)", expanded=True):
                         v_table = []
                         for v in versions:
                             v_table.append({
@@ -550,6 +559,27 @@ elif page == "📜 Sigma Rule Manager":
                                 "Summary of Changes": v["change_summary"]
                             })
                         st.dataframe(pd.DataFrame(v_table), use_container_width=True, hide_index=True)
+
+                        # Active Rollback Controls
+                        older_versions = [v for v in versions if v["version"] < curr_rule.version]
+                        if older_versions:
+                            st.markdown("##### ⏪ Instant Version Rollback")
+                            st.caption("Restore any historical rule snapshot into production:")
+                            rb_col1, rb_col2 = st.columns([3, 1])
+                            with rb_col1:
+                                target_v = st.selectbox(
+                                    "Select Previous Version to Restore:",
+                                    [v["version"] for v in older_versions],
+                                    format_func=lambda x: f"v{x} — {next(v['change_summary'] for v in older_versions if v['version'] == x)}"
+                                )
+                            with rb_col2:
+                                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                                if st.button(f"Rollback to v{target_v}", use_container_width=True):
+                                    restored = rollback_rule_version(curr_rule.id, target_v)
+                                    if restored:
+                                        st.session_state.selected_rule_id = restored.id
+                                        st.session_state.promotion_banner = f"Rule successfully rolled back to v{target_v} (now active as v{restored.version})"
+                                        st.rerun()
         else:
             st.warning("No rules in database.")
 
@@ -561,7 +591,17 @@ elif page == "📜 Sigma Rule Manager":
         if st.button("Validate & Register Rule", use_container_width=True):
             content_to_parse = ""
             if uploaded_file is not None:
-                content_to_parse = uploaded_file.getvalue().decode("utf-8", errors="replace")
+                # Security validations: filename pattern and payload size
+                is_valid_fn, fn_err = validate_rule_filename(uploaded_file.name)
+                if not is_valid_fn:
+                    st.error(f"Rule file rejected: {fn_err}")
+                else:
+                    raw_bytes = uploaded_file.getvalue()
+                    is_valid_sz, sz_err = validate_payload_size(raw_bytes)
+                    if not is_valid_sz:
+                        st.error(f"Rule file rejected: {sz_err}")
+                    else:
+                        content_to_parse = raw_bytes.decode("utf-8", errors="replace")
             elif raw_text.strip():
                 content_to_parse = raw_text
 
@@ -670,21 +710,31 @@ elif page == "🔍 Telemetry Explorer":
     st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    st.subheader("Upload Custom Telemetry (JSONL)")
-    upload_tel = st.file_uploader("Upload custom logs in JSONL format:", type=["jsonl", "json"])
+    st.subheader("Upload Custom Telemetry (JSON / JSONL)")
+    upload_tel = st.file_uploader("Upload custom logs in JSON or JSONL format:", type=["jsonl", "json"])
     tel_label = st.radio("Label uploaded events as:", ["Benign Baseline Telemetry", "Adversary Attack Telemetry"], horizontal=True)
 
     if st.button("Import & Normalize Telemetry"):
         if upload_tel is not None:
-            raw_text = upload_tel.getvalue().decode("utf-8", errors="replace")
-            is_atk = "Attack" in tel_label
-            events_parsed, parse_errs = parse_uploaded_jsonl(raw_text, default_is_attack=is_atk)
-            if events_parsed:
-                save_telemetry_events(events_parsed)
-                st.success(f"Successfully imported and normalized {len(events_parsed)} events!")
-                st.rerun()
+            # Security validations: filename and payload size
+            is_valid_fn, fn_err = validate_telemetry_filename(upload_tel.name)
+            if not is_valid_fn:
+                st.error(f"Telemetry file rejected: {fn_err}")
             else:
-                st.error("No valid telemetry events could be parsed.")
+                raw_bytes = upload_tel.getvalue()
+                is_valid_sz, sz_err = validate_payload_size(raw_bytes)
+                if not is_valid_sz:
+                    st.error(f"Telemetry file rejected: {sz_err}")
+                else:
+                    raw_text = raw_bytes.decode("utf-8", errors="replace")
+                    is_atk = "Attack" in tel_label
+                    events_parsed, parse_errs = parse_uploaded_jsonl(raw_text, default_is_attack=is_atk)
+                    if events_parsed:
+                        save_telemetry_events(events_parsed)
+                        st.success(f"Successfully imported and normalized {len(events_parsed)} events!")
+                        st.rerun()
+                    else:
+                        st.error("No valid telemetry events could be parsed.")
 
 # ==============================================================================
 # PAGE 5: DETECTION RESULTS
@@ -848,15 +898,19 @@ elif page == "🛡️ Rule Hardening Studio":
             delta_dr = round(p.improved_metrics.detection_rate - p.original_metrics.detection_rate, 2)
             c2.markdown(f"""<div class="glass-card glass-card-top-accent-green"><div class="card-label">Hardened Detection</div><div class="card-value" style="color:#10b981;">{p.improved_metrics.detection_rate}%</div><div class="card-subtext" style="color:#10b981; font-weight:700;">▲ +{delta_dr}% Coverage</div></div>""", unsafe_allow_html=True)
             c3.markdown(f"""<div class="glass-card"><div class="card-label">Original False Positives</div><div class="card-value">{p.original_metrics.false_positives}</div></div>""", unsafe_allow_html=True)
-            c4.markdown(f"""<div class="glass-card glass-card-top-accent-green"><div class="card-label">Hardened False Positives</div><div class="card-value" style="color:#10b981;">{p.improved_metrics.false_positives}</div><div class="card-subtext" style="color:#10b981; font-weight:700;">🛡️ 0 New False Alarms</div></div>""", unsafe_allow_html=True)
+            
+            fp_delta_text = f"🛡️ 0 New False Alarms" if p.false_positive_impact == 0 else f"⚠️ +{p.false_positive_impact} New False Alarms"
+            fp_color = "#10b981" if p.false_positive_impact <= 0 else "#ef4444"
+            fp_card_accent = "glass-card-top-accent-green" if p.false_positive_impact <= 0 else "glass-card-top-accent-cyan"
+            c4.markdown(f"""<div class="glass-card {fp_card_accent}"><div class="card-label">Hardened False Positives</div><div class="card-value" style="color:{fp_color};">{p.improved_metrics.false_positives}</div><div class="card-subtext" style="color:{fp_color}; font-weight:700;">{fp_delta_text}</div></div>""", unsafe_allow_html=True)
 
             # Modifications Applied
             st.subheader("Synthesized Rule Modifications")
             for mod in p.modification_reasons:
-                st.markdown(f"- 🔧 **{mod}**")
+                st.markdown(f"- 🔧 **{html.escape(mod)}**")
 
             # Addressed Scenarios
-            st.markdown(f"**Addressed Missed Scenarios:** " + " ".join([f"<span class='chip-mitre'>{sc}</span>" for sc in p.addressed_scenarios]), unsafe_allow_html=True)
+            st.markdown(f"**Addressed Missed Scenarios:** " + " ".join([f"<span class='chip-mitre'>{html.escape(sc)}</span>" for sc in p.addressed_scenarios]), unsafe_allow_html=True)
 
             # Side-by-Side YAML Comparison
             st.subheader("Side-by-Side Rule Specification")
@@ -949,11 +1003,11 @@ elif page == "📊 Reports & Exports":
             "proposals_count": len(proposals)
         }
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.download_button(
-                label="📥 Download JSON Audit Dossier",
+                label="📥 Download JSON Dossier",
                 data=json.dumps(report_data, indent=2),
                 file_name=f"rulehardener_report_{latest_run['run_id']}.json",
                 mime="application/json",
@@ -964,7 +1018,7 @@ elif page == "📊 Reports & Exports":
             df_runs = pd.DataFrame(runs)
             csv_data = df_runs.to_csv(index=False)
             st.download_button(
-                label="📥 Download CSV Performance Metrics",
+                label="📥 Download CSV Metrics",
                 data=csv_data,
                 file_name=f"rulehardener_metrics_{latest_run['run_id']}.csv",
                 mime="text/csv",
@@ -972,15 +1026,24 @@ elif page == "📊 Reports & Exports":
             )
 
         with col3:
+            escaped_title = html.escape(str(latest_run['rule_title']))
+            escaped_run_id = html.escape(str(latest_run['run_id']))
+            fps = latest_run['false_positives']
+            det_rate = latest_run['detection_rate']
+            fp_badge = '<span class="badge badge-green">0 New FP (Clean)</span>' if fps == 0 else f'<span class="badge badge-red">{fps} FP Flagged</span>'
+            dr_badge = '<span class="badge badge-green">Coverage Verified</span>' if det_rate >= 80 else f'<span class="badge badge-amber">{det_rate}% Partial</span>'
+
             html_report = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>RuleHardener Audit Report - {latest_run['run_id']}</title>
+    <title>RuleHardener Audit Report - {escaped_run_id}</title>
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 40px; background: #fff; color: #1e293b; }}
         h1 {{ color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }}
         .badge {{ padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; }}
         .badge-green {{ background: #dcfce7; color: #166534; }}
+        .badge-red {{ background: #fee2e2; color: #991b1b; }}
+        .badge-amber {{ background: #fef3c7; color: #92400e; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
         th, td {{ border: 1px solid #cbd5e1; padding: 10px; text-align: left; }}
         th {{ background: #f8fafc; }}
@@ -988,27 +1051,37 @@ elif page == "📊 Reports & Exports":
 </head>
 <body>
     <h1>RuleHardener Defensive Audit Dossier</h1>
-    <p><strong>Evaluation Run:</strong> {latest_run['run_id']}</p>
+    <p><strong>Evaluation Run:</strong> {escaped_run_id}</p>
     <p><strong>Generated At:</strong> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
-    <p><strong>Target Rule:</strong> {latest_run['rule_title']} (v{latest_run['rule_version']})</p>
+    <p><strong>Target Rule:</strong> {escaped_title} (v{latest_run['rule_version']})</p>
     
     <h2>Detection Performance Scorecard</h2>
     <table>
         <tr><th>Metric</th><th>Value</th><th>Status</th></tr>
-        <tr><td>Detection Rate</td><td>{latest_run['detection_rate']}%</td><td><span class="badge badge-green">Verified</span></td></tr>
-        <tr><td>False Positive Rate</td><td>{latest_run['false_positive_rate']}%</td><td><span class="badge badge-green">Zero FP</span></td></tr>
-        <tr><td>Precision</td><td>{latest_run['precision']}</td><td>Computed</td></tr>
-        <tr><td>Recall</td><td>{latest_run['recall']}</td><td>Computed</td></tr>
+        <tr><td>Detection Rate</td><td>{latest_run['detection_rate']}%</td><td>{dr_badge}</td></tr>
+        <tr><td>False Positive Rate</td><td>{latest_run['false_positive_rate']}%</td><td>{fp_badge}</td></tr>
+        <tr><td>Precision</td><td>{latest_run['precision']}</td><td>Computed (Event-Level)</td></tr>
+        <tr><td>Recall</td><td>{latest_run['recall']}</td><td>Computed (Event-Level)</td></tr>
         <tr><td>F1 Score</td><td>{latest_run['f1_score']}</td><td>Computed</td></tr>
     </table>
 </body>
 </html>
 """
             st.download_button(
-                label="📥 Download Printable HTML/PDF Audit",
+                label="📥 Download HTML Report",
                 data=html_report,
                 file_name=f"rulehardener_audit_{latest_run['run_id']}.html",
                 mime="text/html",
+                use_container_width=True
+            )
+
+        with col4:
+            pdf_bytes = generate_pdf_report(latest_run, len(proposals))
+            st.download_button(
+                label="📥 Download PDF Dossier",
+                data=pdf_bytes,
+                file_name=f"rulehardener_audit_{latest_run['run_id']}.pdf",
+                mime="application/pdf",
                 use_container_width=True
             )
 

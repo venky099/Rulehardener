@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.30+-red.svg)](https://streamlit.io)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-36%20Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-46%20Passed-brightgreen.svg)]()
 
 **RuleHardener** is a 100% offline, deterministic cybersecurity platform that evaluates existing Sigma detection rules against controlled attack and benign telemetry datasets. It identifies detection blind spots, deterministically proposes hardened rule improvements, and verifies that proposed modifications increase true positive coverage without introducing false positives.
 
@@ -77,7 +77,7 @@ python -m pip install -r requirements.txt
 
 ## 🧪 Running Automated Tests
 
-Run the complete test suite covering Sigma validation, condition parsing, modifier matching, detection evaluation, hardening algorithms, metrics, and SQLite database persistence:
+Run the complete test suite covering Sigma validation, condition parsing, modifier matching, detection evaluation, hardening algorithms, metrics, ReDoS protection, regression gates, and SQLite persistence:
 
 ```powershell
 python -m pytest
@@ -85,7 +85,7 @@ python -m pytest
 
 Expected output:
 ```text
-============================= 36 passed in 0.83s ==============================
+============================= 46 passed in 1.45s ==============================
 ```
 
 ---

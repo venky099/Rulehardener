@@ -10,6 +10,8 @@ import yaml
 from backend.models import SigmaRule
 from backend.rule_manager.sigma_validator import validate_sigma_rule
 from backend.utils.logger import logger
+from backend.utils.validators import is_safe_path
+from backend.config import settings
 
 class SigmaLoadError(Exception):
     def __init__(self, message: str, errors: Optional[List[str]] = None):
@@ -56,7 +58,9 @@ def parse_sigma_yaml(yaml_content: str, source_path: Optional[str] = None) -> Si
     )
 
 def load_sigma_file(file_path: Path) -> SigmaRule:
-    """Load a Sigma rule from a file path."""
+    """Load a Sigma rule from a file path safely."""
+    if not is_safe_path(settings.BASE_DIR, file_path):
+        raise ValueError(f"Path traversal detected or access outside base directory forbidden: {file_path}")
     if not file_path.exists():
         raise FileNotFoundError(f"Sigma rule file not found: {file_path}")
     content = file_path.read_text(encoding="utf-8")

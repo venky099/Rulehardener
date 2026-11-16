@@ -3,9 +3,19 @@ Deterministic Sigma Rule Matching Engine
 Implements AST condition parsing, modifier evaluation, and detailed per-event match diagnostics.
 """
 import re
-import fnmatch
 from typing import Dict, Any, List, Tuple, Optional, Set
 from backend.models import SigmaRule, TelemetryEvent, EventEvaluationResult
+
+def wildcard_match(pattern: str, text: str, case_sensitive: bool = False) -> bool:
+    """
+    Platform-independent, deterministic wildcard matching without fnmatch quirks.
+    * matches 0 or more characters, ? matches 1 character.
+    Brackets [ and ] are treated as literal characters, preventing regex character class misinterpretation.
+    """
+    escaped = re.escape(pattern)
+    regex_pattern = "^" + escaped.replace(r"\*", ".*").replace(r"\?", ".") + "$"
+    flags = 0 if case_sensitive else re.IGNORECASE
+    return bool(re.match(regex_pattern, text, flags))
 
 class ConditionASTNode:
     """Base AST Node for Sigma Condition Expressions."""
@@ -51,7 +61,7 @@ class QuantifierNode(ConditionASTNode):
         if self.pattern == "them":
             matching_keys = list(selection_results.keys())
         else:
-            matching_keys = [k for k in selection_results.keys() if fnmatch.fnmatch(k, self.pattern)]
+            matching_keys = [k for k in selection_results.keys() if wildcard_match(self.pattern, k)]
         
         if not matching_keys:
             return False
@@ -114,6 +124,9 @@ class ConditionParser:
         if not self.tokens:
             return IdentifierNode("selection")
         node = self.parse_or()
+        if self.pos < len(self.tokens):
+            leftover = " ".join(self.tokens[self.pos:])
+            raise ValueError(f"Unexpected trailing tokens in condition: '{leftover}'")
         return node
 
     def parse_or(self) -> ConditionASTNode:
@@ -199,8 +212,15 @@ def match_single_criteria(field_value: str, criteria_val: Any, modifiers: List[s
         target_norm = target_norm.replace("/", "-")
 
     if "re" in modifiers:
+        # ReDoS safety guard: reject dangerous nested quantifiers and excessively long patterns
+        if len(target_val) > 500:
+            return False
+        if re.search(r"\([^)]*[\+\*]\)[\+\*]", target_val):
+            return False
         try:
-            return bool(re.search(target_val, actual_val, re.IGNORECASE))
+            # Sigma regular expressions are case-sensitive by default unless nocase is specified
+            flags = re.IGNORECASE if "nocase" in modifiers else 0
+            return bool(re.search(target_val, actual_val, flags))
         except re.error:
             return False
 
@@ -213,7 +233,7 @@ def match_single_criteria(field_value: str, criteria_val: Any, modifiers: List[s
     else:
         # Default match: exact or wildcard matching
         if "*" in target_val or "?" in target_val:
-            return fnmatch.fnmatch(actual_norm, target_norm)
+            return wildcard_match(target_norm, actual_norm, case_sensitive=False)
         return actual_norm == target_norm
 
 def evaluate_field_selection(event: TelemetryEvent, field_expr: str, criteria: Any) -> Tuple[bool, str]:
@@ -271,7 +291,31 @@ def evaluate_selection_block(event: TelemetryEvent, selection_data: Any) -> Tupl
         return all_matched, matching_fields, non_matching_fields, reasons
 
     elif isinstance(selection_data, list):
-        # List of maps is evaluated as OR of maps
+        # 1. Keyword-list selection (list of strings/scalars without field names):
+        # In Sigma standard, matches if ANY keyword is found across all event string fields.
+        if selection_data and all(not isinstance(x, dict) for x in selection_data):
+            keywords = [str(x).lower() for x in selection_data]
+            searchable_strings = [
+                event.command_line.lower() if event.command_line else "",
+                event.image.lower() if event.image else "",
+                event.parent_image.lower() if event.parent_image else "",
+                event.parent_command_line.lower() if event.parent_command_line else "",
+                event.user.lower() if event.user else "",
+                event.original_file_name.lower() if event.original_file_name else "",
+                event.current_directory.lower() if event.current_directory else "",
+            ]
+            if event.raw_event:
+                for k, v in event.raw_event.items():
+                    if v is not None:
+                        searchable_strings.append(str(v).lower())
+
+            for kw in keywords:
+                for s in searchable_strings:
+                    if kw in s:
+                        return True, {"keywords": {"matched_keyword": kw}}, {}, [f"Keyword '{kw}' matched event telemetry"]
+            return False, {}, {"keywords": {"expected": selection_data}}, [f"None of keywords {selection_data} found in event"]
+
+        # 2. List of maps is evaluated as OR of maps
         any_matched = False
         all_reasons = []
         for idx, sub_dict in enumerate(selection_data):

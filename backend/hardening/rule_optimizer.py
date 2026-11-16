@@ -10,20 +10,18 @@ from backend.models import SigmaRule
 from backend.rule_manager.sigma_validator import validate_sigma_rule
 from backend.rule_manager.sigma_loader import parse_sigma_yaml
 
-ENCODED_FLAG_VARIATIONS = [
-    "EncodedCommand",
-    "-enc",
-    "-e ",
-    "-en ",
-    "/enc",
-    "/e ",
-    "/en ",
-]
-
+# Supported interpreter executables
 POWERSHELL_BINARIES = [
     r"\powershell.exe",
-    r"\pwsh.exe"
+    r"\pwsh.exe",
+    r"\powershell_ise.exe",
 ]
+
+# Strict parameter regular expression:
+# Requires CLI flag boundaries (-enc, -ec, -en, -e, /enc, /ec, /en, /e, or -EncodedCommand)
+# followed by at least 4 base64 characters.
+# Prevents false positives on benign arguments like 'robocopy A B /e', 'xcopy /e', or 'git config -e'.
+STRICT_ENCODED_REGEX = r'(?i)(?:^|[\s"\'`])[-/](?:encodedcommand|enc|ec|en|e)(?:[\s:]|$)\s*[A-Za-z0-9+/=]{4,}'
 
 def optimize_rule(rule: SigmaRule, gaps: List[Dict[str, Any]]) -> Tuple[SigmaRule, List[str], List[str]]:
     """
@@ -48,68 +46,94 @@ def optimize_rule(rule: SigmaRule, gaps: List[Dict[str, Any]]) -> Tuple[SigmaRul
             for img_key in ["Image|endswith", "Image"]:
                 if img_key in sel_block:
                     current_img = sel_block[img_key]
-                    if current_img == r"\powershell.exe" or current_img == "powershell.exe":
+                    if current_img in (r"\powershell.exe", "powershell.exe"):
                         sel_block["Image|endswith"] = POWERSHELL_BINARIES
                         if img_key != "Image|endswith":
                             del sel_block[img_key]
-                        applied_mods.append("Generalized Image to include PowerShell Core ('\\pwsh.exe').")
+                        applied_mods.append("Generalized Image to include PowerShell Core ('\\pwsh.exe') and ISE ('\\powershell_ise.exe').")
                         break
 
-            # Check CommandLine flag expansion
+            # Check CommandLine flag expansion with strict boundaries
             for cmd_key in ["CommandLine|contains", "CommandLine"]:
                 if cmd_key in sel_block:
                     current_cmd = sel_block[cmd_key]
                     if isinstance(current_cmd, str) and "encodedcommand" in current_cmd.lower():
-                        sel_block["CommandLine|contains"] = ENCODED_FLAG_VARIATIONS
-                        if cmd_key != "CommandLine|contains":
-                            del sel_block[cmd_key]
-                        applied_mods.append("Expanded CommandLine to match parameter abbreviations (-enc, -e, /enc).")
+                        sel_block["CommandLine|re"] = STRICT_ENCODED_REGEX
+                        del sel_block[cmd_key]
+                        applied_mods.append("Upgraded CommandLine to strict regex parameter boundary matching (-enc, -ec, -en, -e, /enc, /e) with base64 boundary protection.")
                         break
 
     # 2. Additional Selections for unhandled techniques
-    condition_parts = [detection.get("condition", "selection")]
-    
     if "download_cradle_miss" in gap_types:
         detection["selection_cradle"] = {
             "Image|endswith": POWERSHELL_BINARIES,
             "CommandLine|contains|all": ["IEX", "DownloadString"]
         }
-        condition_parts.append("selection_cradle")
         applied_mods.append("Added 'selection_cradle' to detect in-memory IEX/DownloadString stages.")
 
     if "execution_policy_bypass_miss" in gap_types:
         detection["selection_bypass"] = {
             "Image|endswith": POWERSHELL_BINARIES,
-            "CommandLine|contains": ["ExecutionPolicy Bypass", "-ep bypass", "/ep bypass"]
+            "CommandLine|contains": [
+                "ExecutionPolicy Bypass",
+                "ExecutionPolicy:Bypass",
+                "-ep bypass",
+                "-ep:bypass",
+                "-exec bypass",
+                "-exec:bypass",
+                "-ex bypass",
+                "-ex:bypass",
+                "/ep bypass",
+                "/ep:bypass",
+                "/exec bypass",
+                "/exec:bypass",
+                "/executionpolicy bypass",
+                "/executionpolicy:bypass",
+            ]
         }
-        # Add legitimate enterprise management exclusion filter to prevent false positives from SCCM/CcmExec
+        # Legitimate enterprise management exclusion filter strictly scoped to legitimate CCM directory:
+        # Prevents attacker bypass via arbitrary locations like C:\Users\Public\CcmExec.exe
         detection["filter_sccm"] = {
-            "ParentImage|endswith": r"\CcmExec.exe"
+            "ParentImage|startswith": [
+                "C:\\Windows\\CCM\\",
+                "C:\\SMS_CCM\\"
+            ],
+            "ParentImage|endswith": "\\CcmExec.exe"
         }
-        condition_parts.append("selection_bypass")
-        applied_mods.append("Added 'selection_bypass' to catch execution policy bypass invocations.")
-        applied_mods.append("Synthesized 'filter_sccm' to whitelist legitimate enterprise CcmExec executions.")
+        applied_mods.append("Added 'selection_bypass' covering ExecutionPolicy Bypass variations (-ep, -exec, -ex, /ep, /exec).")
+        applied_mods.append("Synthesized path-scoped 'filter_sccm' for legitimate enterprise CcmExec path.")
 
-    # Reconstruct condition
-    if len(condition_parts) > 1:
-        base_cond = condition_parts[0]
-        additional_conds = " or ".join(condition_parts[1:])
-        combined = f"({base_cond}) or ({additional_conds})"
+    # Reconstruct condition:
+    # Security Architecture: filter_sccm ONLY scopes benign execution policy bypasses.
+    # Encoded commands and download cradles are NEVER suppressed by filter_sccm.
+    cond_parts = []
+    base_cond = detection.get("condition", "selection")
+    cond_parts.append(f"({base_cond})")
+    
+    if "selection_cradle" in detection:
+        cond_parts.append("(selection_cradle)")
+        
+    if "selection_bypass" in detection:
         if "filter_sccm" in detection:
-            detection["condition"] = f"({combined}) and not filter_sccm"
+            cond_parts.append("(selection_bypass and not filter_sccm)")
         else:
-            detection["condition"] = combined
+            cond_parts.append("(selection_bypass)")
+            
+    detection["condition"] = " or ".join(cond_parts)
 
     # Update metadata
     new_id = str(uuid.uuid4())
     data["id"] = new_id
     data["title"] = f"{data.get('title', 'Rule')} (Hardened)"
-    data["description"] = f"{data.get('description', '')}\n[Hardened]: Deterministically expanded coverage for parameter abbreviations, pwsh.exe, and download cradles."
+    mod_summary = "; ".join(applied_mods)
+    data["description"] = f"{data.get('description', '')}\n[Hardened]: {mod_summary}"
     data["detection"] = detection
+    data["status"] = data.get("status", "experimental")
     
     tags = list(data.get("tags", []))
-    if "attack.t1059.001" not in tags:
-        tags.append("attack.t1059.001")
+    if any("powershell" in str(v).lower() for v in detection.values()):
+        if "attack.t1059.001" not in tags:
+            tags.append("attack.t1059.001")
     if "rulehardener.hardened" not in tags:
         tags.append("rulehardener.hardened")
     data["tags"] = tags

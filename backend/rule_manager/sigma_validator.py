@@ -43,18 +43,51 @@ def validate_detection_block(detection: Any) -> Tuple[bool, List[str]]:
     if not declared_identifiers:
         errors.append("Detection block must define at least one selection identifier.")
 
-    # Check that condition references valid identifiers (token-based check)
     condition_str = detection.get("condition", "") if isinstance(detection.get("condition"), str) else ""
-    tokens = set(re.findall(r'\b[A-Za-z0-9_]+\b', condition_str))
-    
-    # Check if any declared identifier or wildcard matching is referenced
-    referenced = False
-    for ident in declared_identifiers:
-        if ident in tokens:
-            referenced = True
-            break
-    if not referenced and "1 of " not in condition_str and "all of " not in condition_str and declared_identifiers:
-        errors.append(f"Condition '{condition_str}' does not reference any declared selections: {sorted(list(declared_identifiers))}")
+
+    # Validate condition syntax and reference integrity using ConditionParser
+    if condition_str and declared_identifiers:
+        try:
+            from backend.detection.sigma_matcher import (
+                ConditionParser, wildcard_match, IdentifierNode, QuantifierNode, NotNode, AndNode, OrNode
+            )
+            parser = ConditionParser(condition_str)
+            ast_root = parser.parse()
+
+            referenced_identifiers = []
+            quantifier_patterns = []
+
+            def collect_nodes(node):
+                if isinstance(node, IdentifierNode):
+                    referenced_identifiers.append(node.identifier)
+                elif isinstance(node, QuantifierNode):
+                    quantifier_patterns.append(node.pattern)
+                elif isinstance(node, NotNode):
+                    collect_nodes(node.child)
+                elif isinstance(node, (AndNode, OrNode)):
+                    collect_nodes(node.left)
+                    collect_nodes(node.right)
+
+            collect_nodes(ast_root)
+
+            # Check that every referenced identifier exists in declared_identifiers
+            undeclared = [ref for ref in referenced_identifiers if ref not in declared_identifiers]
+            if undeclared:
+                errors.append(f"Condition does not reference declared selections; references undeclared identifier(s): {undeclared}")
+
+            # Check that quantifier patterns match at least one declared selection
+            for pat in quantifier_patterns:
+                if pat != "them":
+                    matching = [k for k in declared_identifiers if wildcard_match(pat, k)]
+                    if not matching:
+                        errors.append(f"Condition quantifier pattern '{pat}' matches no declared selections: {sorted(list(declared_identifiers))}")
+
+            # Ensure at least one declared selection is referenced
+            if not referenced_identifiers and not quantifier_patterns:
+                errors.append(f"Condition '{condition_str}' does not reference any declared selections.")
+
+        except Exception as e:
+            errors.append(f"Condition syntax error: {str(e)}")
 
     return len(errors) == 0, errors
 

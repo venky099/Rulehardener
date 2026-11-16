@@ -55,9 +55,18 @@ def evaluate_and_compare_rules(
     hard_evts, hard_scens = evaluate_rule_on_dataset(hardened_rule, events, scenarios)
     hard_metrics = calculate_detection_metrics(hard_evts, hard_scens)
 
-    # 5. False Positive Guardrail Check
+    # 5. Dual Guardrail Check: False Positive Impact AND Regression Protection (No Lost Detections)
     fp_impact = hard_metrics.false_positives - orig_metrics.false_positives
-    passed_guardrail = fp_impact <= settings.MAX_ALLOWED_NEW_FALSE_POSITIVES
+    
+    # Verify that no previously detected attack scenario is lost in the hardened rule
+    lost_detections = [
+        s.scenario_id for s in orig_scens
+        if s.is_attack and s.detected and not next((h.detected for h in hard_scens if h.scenario_id == s.scenario_id), False)
+    ]
+    
+    passed_guardrail = (fp_impact <= settings.MAX_ALLOWED_NEW_FALSE_POSITIVES) and (len(lost_detections) == 0)
+    if lost_detections:
+        applied_mods.append(f"CRITICAL REGRESSION: Hardened rule missed previously detected attack scenario(s): {lost_detections}")
 
     # 6. Generate Diff
     diff_str = generate_yaml_diff(original_rule.raw_yaml, hardened_rule.raw_yaml)
@@ -76,5 +85,5 @@ def evaluate_and_compare_rules(
         improved_metrics=hard_metrics,
         false_positive_impact=fp_impact,
         passed_guardrail=passed_guardrail,
-        status="approved" if passed_guardrail else "rejected"
+        status="proposed" if passed_guardrail else "rejected"
     )

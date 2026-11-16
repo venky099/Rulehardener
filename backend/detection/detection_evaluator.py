@@ -32,10 +32,28 @@ def evaluate_rule_on_dataset(
         if res.detected:
             scenario_detected_counts[sc_id] = scenario_detected_counts.get(sc_id, 0) + 1
 
+    # Ensure all scenarios referenced in events are tracked (handles uploaded events with GEN-000 or custom IDs)
+    known_scenario_ids = {s.scenario_id for s in scenarios}
+    all_scenarios = list(scenarios)
+    for sc_id, count in scenario_event_counts.items():
+        if sc_id not in known_scenario_ids:
+            is_atk = any(e.is_attack for e in events if e.scenario_id == sc_id)
+            cat = "attack" if is_atk else "benign"
+            new_sc = AttackScenario(
+                scenario_id=sc_id,
+                name=f"Custom Telemetry ({sc_id})",
+                description=f"Auto-registered scenario for {count} uploaded telemetry event(s)",
+                category=cat,
+                mitre_technique_id="T1059.001" if is_atk else "None",
+                technique_name=f"Uploaded {cat.title()} Telemetry"
+            )
+            all_scenarios.append(new_sc)
+            known_scenario_ids.add(sc_id)
+
     scenario_results: List[ScenarioEvaluation] = []
     
-    # Process all known scenarios
-    for sc in scenarios:
+    # Process all scenarios
+    for sc in all_scenarios:
         total_evts = scenario_event_counts.get(sc.scenario_id, 0)
         detected_evts = scenario_detected_counts.get(sc.scenario_id, 0)
         

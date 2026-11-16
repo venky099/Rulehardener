@@ -30,23 +30,25 @@ def calculate_detection_metrics(
     detected_attack_scenarios = sum(1 for s in attack_scenarios if s.detected)
     missed_attack_scenarios = total_attack_scenarios - detected_attack_scenarios
 
-    # 2. Benign Events breakdown
+    # 2. Event-level breakdown (consistent event units across confusion matrix)
+    attack_events = [e for e in event_results if e.is_attack]
+    total_attack_events = len(attack_events)
+    true_positives = sum(1 for e in attack_events if e.detected)
+    false_negatives = total_attack_events - true_positives
+
     benign_events = [e for e in event_results if not e.is_attack]
     total_benign_events = len(benign_events)
     false_positives = sum(1 for e in benign_events if e.detected)
     true_negatives = total_benign_events - false_positives
 
-    # 3. Scenario-level TP and FN
-    true_positives = detected_attack_scenarios
-    false_negatives = missed_attack_scenarios
-
-    # 4. Standard formulas as prescribed in prompt.md:
+    # 3. Detection Rate & False Positive Rate
     # Detection Rate = Detected Attack Scenarios / Total Attack Scenarios * 100
     detection_rate = safe_divide(detected_attack_scenarios, total_attack_scenarios, 100.0)
 
     # False Positive Rate = False Positives / Total Benign Events * 100
     false_positive_rate = safe_divide(false_positives, total_benign_events, 100.0)
 
+    # 4. Mathematically consistent Precision, Recall, and F1 at Event-Level (pure event units)
     # Precision = TP / (TP + FP)
     precision = safe_divide(true_positives, true_positives + false_positives, 1.0)
 

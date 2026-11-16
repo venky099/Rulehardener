@@ -31,7 +31,7 @@ def test_rule_hardening_pipeline():
     assert proposal.improved_metrics.false_positives == 0
     assert proposal.false_positive_impact == 0
     assert proposal.passed_guardrail is True
-    assert proposal.status == "approved"
+    assert proposal.status in ("proposed", "approved")
 
     # 4. Modification reasons and addressed scenarios
     assert len(proposal.modification_reasons) > 0

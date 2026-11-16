@@ -2,6 +2,8 @@
 Telemetry Event Normalizer
 Maps varied event schemas (Windows Event 4688, Sysmon Event 1, EDR formats) into standard TelemetryEvent fields.
 """
+import hashlib
+import json
 from typing import Dict, Any
 from backend.models import TelemetryEvent
 
@@ -34,33 +36,41 @@ def normalize_raw_event(raw: Dict[str, Any], default_is_attack: bool = False, de
                 return clean_map[stripped_alias]
         return default
 
-    event_id = str(raw.get("event_id") or raw.get("EventId") or raw.get("EventID") or f"EVT-{abs(hash(str(raw))) % 1000000:06d}")
-    image = str(extract_val("image", "C:\\Windows\\System32\\cmd.exe"))
-    command_line = str(extract_val("command_line", image))
-    parent_image = str(extract_val("parent_image", "C:\\Windows\\System32\\explorer.exe"))
-    parent_command_line = str(extract_val("parent_command_line", ""))
-    user = str(extract_val("user", "NT AUTHORITY\\SYSTEM"))
+    raw_repr = json.dumps(raw, sort_keys=True, default=str)
+    evt_hash = hashlib.sha256(raw_repr.encode("utf-8")).hexdigest()[:8]
+    event_id = str(raw.get("event_id") or raw.get("EventId") or raw.get("EventID") or f"EVT-{evt_hash}")
+    
+    # Do not fabricate false executable names; preserve what is actually present
+    image = str(extract_val("image", "") or "")
+    command_line = str(extract_val("command_line", image) or image)
+    parent_image = str(extract_val("parent_image", "") or "")
+    parent_command_line = str(extract_val("parent_command_line", "") or "")
+    user = str(extract_val("user", "") or "")
     
     try:
-        process_id = int(extract_val("process_id", 1000))
+        pid_val = extract_val("process_id", None)
+        process_id = int(pid_val) if pid_val is not None else 0
     except (ValueError, TypeError):
-        process_id = 1000
+        process_id = 0
 
     try:
-        parent_process_id = int(extract_val("parent_process_id", 500))
+        ppid_val = extract_val("parent_process_id", None)
+        parent_process_id = int(ppid_val) if ppid_val is not None else 0
     except (ValueError, TypeError):
-        parent_process_id = 500
+        parent_process_id = 0
 
-    computer = str(extract_val("computer", "WIN-ENDPOINT-01"))
-    current_directory = str(extract_val("current_directory", "C:\\Windows\\System32"))
-    original_file_name = str(extract_val("original_file_name", ""))
+    computer = str(extract_val("computer", "") or "")
+    current_directory = str(extract_val("current_directory", "") or "")
+    original_file_name = str(extract_val("original_file_name", "") or "")
     hashes = raw.get("hashes", {}) if isinstance(raw.get("hashes"), dict) else {}
     
-    is_attack = raw.get("is_attack")
-    if is_attack is None:
+    is_attack_raw = raw.get("is_attack")
+    if is_attack_raw is None:
         is_attack = default_is_attack
+    elif isinstance(is_attack_raw, str):
+        is_attack = is_attack_raw.strip().lower() in ("true", "1", "yes")
     else:
-        is_attack = bool(is_attack)
+        is_attack = bool(is_attack_raw)
 
     scenario_id = str(raw.get("scenario_id") or default_scenario_id)
 

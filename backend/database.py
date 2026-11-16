@@ -287,6 +287,35 @@ def get_rule_versions(rule_id: str) -> List[Dict[str, Any]]:
     conn.close()
     return [dict(r) for r in rows]
 
+def rollback_rule_version(rule_id: str, target_version: int) -> Optional[SigmaRule]:
+    """
+    Rolls back the specified rule to the definition in target_version.
+    Creates a new version record in rule_versions documenting the rollback.
+    """
+    conn = get_connection()
+    row = conn.execute("""
+    SELECT raw_yaml FROM rule_versions WHERE rule_id = ? AND version = ?;
+    """, (rule_id, target_version)).fetchone()
+    
+    if not row:
+        conn.close()
+        return None
+        
+    target_yaml = row["raw_yaml"]
+    
+    curr = conn.execute("SELECT current_version FROM rules WHERE id = ?;", (rule_id,)).fetchone()
+    current_ver = curr["current_version"] if curr else 1
+    new_ver = current_ver + 1
+    conn.close()
+    
+    from backend.rule_manager.sigma_loader import parse_sigma_yaml
+    restored_rule = parse_sigma_yaml(target_yaml)
+    restored_rule.id = rule_id
+    restored_rule.version = new_ver
+    
+    save_rule(restored_rule, version=new_ver, change_summary=f"Rolled back to definition from version v{target_version}")
+    return restored_rule
+
 def save_scenarios(scenarios: List[AttackScenario]) -> None:
     conn = get_connection()
     for sc in scenarios:
